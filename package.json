@@ -1,0 +1,36 @@
+{
+  "name": "appstore-screenshot-gen",
+  "version": "2.0.0",
+  "description": "Auto-generate App Store screenshots from any e-commerce URL",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.36.3",
+    "@napi-rs/canvas": "^0.1.57",
+    "@types/chroma-js": "^3.1.2",
+    "archiver": "^7.0.1",
+    "chalk": "^5.4.1",
+    "chokidar": "^4.0.3",
+    "chroma-js": "^3.2.0",
+    "color": "^4.2.3",
+    "commander": "^12.1.0",
+    "dotenv": "^17.3.1",
+    "express": "^4.21.2",
+    "node-vibrant": "^3.1.6",
+    "open": "^10.1.0",
+    "ora": "^8.2.0",
+    "puppeteer": "^23.11.1",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "@types/archiver": "^6.0.3",
+    "@types/color": "^3.0.6",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

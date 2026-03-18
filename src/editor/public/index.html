@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mockup Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800;12..96,900&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+body { font-family: 'DM Sans', system-ui, sans-serif; background: #0A0A0D; color: #E0DDD6; }
+input, textarea, button { font-family: inherit; }
+img { display: block; }
+.export-btn { opacity: 0 !important; transition: opacity 0.15s; }
+.screen-card-wrap:hover .export-btn { opacity: 0.75 !important; }
+</style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useCallback, useRef, useEffect } = React;
+
+/* ═══════════════════════════════════════════
+   COLOR UTILS
+   ═══════════════════════════════════════════ */
+function hexToHSL(hex) {
+  if (!hex || hex.length < 7) return [0, 0, 50];
+  let r = parseInt(hex.slice(1,3),16)/255, g = parseInt(hex.slice(3,5),16)/255, b = parseInt(hex.slice(5,7),16)/255;
+  const max = Math.max(r,g,b), min = Math.min(r,g,b);
+  let h = 0, s = 0, l = (max+min)/2;
+  if (max !== min) { const d = max-min; s = l > 0.5 ? d/(2-max-min) : d/(max+min); if (max===r) h = ((g-b)/d+(g<b?6:0))/6; else if (max===g) h = ((b-r)/d+2)/6; else h = ((r-g)/d+4)/6; }
+  return [h*360, s*100, l*100];
+}
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const a = s * Math.min(l, 1-l);
+  const f = n => { const k = (n+h/30)%12; return l - a*Math.max(Math.min(k-3, 9-k, 1), -1); };
+  return `#${[f(0),f(8),f(4)].map(x => Math.round(x*255).toString(16).padStart(2,'0')).join('')}`;
+}
+function lighten(hex, a) { const [h,s,l] = hexToHSL(hex); return hslToHex(h, Math.max(s-8,0), l+(100-l)*a); }
+function darken(hex, a) { const [h,s,l] = hexToHSL(hex); return hslToHex(h, s, l*(1-a)); }
+function shiftHue(hex, d) { const [h,s,l] = hexToHSL(hex); return hslToHex((h+d)%360, s, l); }
+function isLightColor(hex) { if (!hex || hex.length < 7) return true; const [,,l] = hexToHSL(hex); return l > 55; }
+
+/* ═══════════════════════════════════════════
+   HELPERS
+   ═══════════════════════════════════════════ */
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => resolve(e.target.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+/* ═══════════════════════════════════════════
+   TEMPLATES
+   ═══════════════════════════════════════════ */
+const TEMPLATES = [
+  {
+    id: 'minimal', name: 'Clean Minimal', desc: 'Apple-inspired, light & airy',
+    textColor: '#1A1A1A',
+    bg: (c) => ({ background: lighten(c, 0.93) }),
+    decos: () => [],
+  },
+  {
+    id: 'gradient', name: 'Brand Gradient', desc: 'Rich gradient with sparkles',
+    textColor: '#FFFFFF',
+    bg: (c) => ({ background: `linear-gradient(150deg, ${c}, ${darken(c, 0.35)}, ${darken(c, 0.6)})` }),
+    decos: (c) => [
+      ...Array.from({length:6},(_,i) => ({ type:'circle', cx:`${10+(i*17)%85}%`, cy:`${8+(i*23)%80}%`, r:`${3+i*1.5}%`, fill:'#fff', opacity:0.03+i*0.01 })),
+      ...Array.from({length:12},(_,i) => ({ type:'dot', cx:`${5+(i*13)%90}%`, cy:`${3+(i*19)%94}%`, r:2, fill:'#fff', opacity:0.1+(i%4)*0.08 })),
+    ],
+  },
+  {
+    id: 'dark', name: 'Dark Premium', desc: 'Moody, elegant, luxurious',
+    textColor: '#F0EDE8',
+    bg: () => ({ background: '#0E0E11' }),
+    decos: (c) => [
+      { type:'glow', cx:'50%', cy:'30%', r:'55%', fill:c, opacity:0.12 },
+      ...Array.from({length:8},(_,i) => ({ type:'dot', cx:`${8+(i*17)%84}%`, cy:`${5+(i*21)%90}%`, r:1.5, fill:c, opacity:0.08+(i%3)*0.06 })),
+    ],
+  },
+  {
+    id: 'editorial', name: 'Bold Editorial', desc: 'Magazine-style, high impact',
+    textColor: '#FFFFFF',
+    bg: (c) => ({ background: `linear-gradient(135deg, ${c}, ${darken(c, 0.25)}, ${shiftHue(darken(c, 0.4), 20)})` }),
+    decos: (c) => [
+      { type:'slab', x:'62%', y:'-5%', w:'40%', h:'110%', fill:'#fff', opacity:0.025, skew:-12 },
+      { type:'slab', x:'-8%', y:'72%', w:'45%', h:'35%', fill:'#fff', opacity:0.025, skew:8 },
+      ...Array.from({length:3},(_,i) => ({ type:'rect', x:`${15+i*30}%`, y:`${20+i*25}%`, w:50+i*20, h:50+i*20, fill:'#fff', opacity:0.02, rotate:-10+i*12 })),
+    ],
+  },
+];
+
+const SCREENS = [
+  { id: 's1', label: 'Home',            defaultHeadline: 'Style at your fingertips' },
+  { id: 's2', label: 'Product Detail',  defaultHeadline: 'Every detail, one tap away' },
+  { id: 's3', label: 'Product Listing', defaultHeadline: 'Curated just for you' },
+  { id: 's4', label: 'Categories',      defaultHeadline: 'Navigate your next look' },
+];
+
+const DEVICES = [
+  { id: 'iphone',  label: 'iPhone 6.5"',  w: 1242, h: 2688, aspect: 0.462 },
+  { id: 'android', label: 'Play Store',   w: 1080, h: 1920, aspect: 0.5625 },
+  { id: 'ipad',    label: 'iPad',         w: 2048, h: 2732, aspect: 0.75 },
+];
+
+/* ═══════════════════════════════════════════
+   DEVICE FRAME (SVG, pixel-perfect)
+   ═══════════════════════════════════════════ */
+const _frameIdCounters = {};
+function DeviceFrame({ device, children, scale = 1 }) {
+  const isIpad = device === 'ipad';
+  const isAndroid = device === 'android';
+  const w = (isIpad ? 280 : 200) * scale;
+  // Android h matched to modern tall phone (20:9 ≈ 0.465 ratio), not old 9:16
+  const h = (isIpad ? 373 : isAndroid ? 430 : 433) * scale;
+  const bz = w * (isIpad ? 0.016 : 0.013);
+  // Android: smaller corner radius — modern flat-sided phones (Pixel/Galaxy)
+  const cr = w * (isIpad ? 0.028 : isAndroid ? 0.09 : 0.175);
+  const scr = Math.max(cr - bz, 2);
+  // Stable ID: no random on re-render to avoid SVG flicker
+  const idRef = useRef(null);
+  if (!idRef.current) {
+    _frameIdCounters[device] = (_frameIdCounters[device] || 0) + 1;
+    idRef.current = `df-${device}-${_frameIdCounters[device]}`;
+  }
+  const maskId = idRef.current;
+
+  return (
+    <div style={{ width: w, height: h, position: 'relative', flexShrink: 0 }}>
+      {/* Screen content — rendered as HTML under the SVG frame */}
+      <div style={{
+        position: 'absolute', left: bz, top: bz,
+        width: w - bz * 2, height: h - bz * 2,
+        borderRadius: scr, overflow: 'hidden',
+        background: '#f5f3ef', zIndex: 1,
+      }}>
+        {children}
+      </div>
+      {/* Device frame SVG — bezel only, screen area punched out via mask */}
+      <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}
+           style={{ position: 'absolute', top: 0, left: 0, zIndex: 2, pointerEvents: 'none' }}>
+        <defs>
+          <mask id={maskId}>
+            {/* White = visible, Black = transparent (punches out screen) */}
+            <rect width={w} height={h} fill="white" />
+            <rect x={bz} y={bz} width={w - bz * 2} height={h - bz * 2} rx={scr} fill="black" />
+          </mask>
+        </defs>
+        {/* Device body — mask cuts the screen area transparent */}
+        <rect width={w} height={h} rx={cr} fill="#1C1C1E" mask={`url(#${maskId})`} />
+        {/* Edge highlight */}
+        <rect x={0.5} y={0.5} width={w - 1} height={h - 1} rx={cr} fill="none" stroke="#3A3A3C" strokeWidth={0.5} />
+        {/* Device-specific notch / pill / camera */}
+        {isIpad && <circle cx={w/2} cy={bz * 0.5} r={w * 0.004} fill="#2C2C2E" />}
+        {isAndroid && <circle cx={w/2} cy={bz + h * 0.018} r={w * 0.013} fill="#1A1A1A" stroke="#2C2C2E" strokeWidth={0.5} />}
+        {!isIpad && !isAndroid && <rect x={(w - w * 0.28) / 2} y={bz + h * 0.01} width={w * 0.28} height={w * 0.032} rx={w * 0.016} fill="#000" />}
+        {/* Home indicator bar */}
+        <rect x={(w - w * (isIpad ? 0.2 : 0.33)) / 2} y={h - bz * (isIpad ? 0.8 : 3.5)}
+              width={w * (isIpad ? 0.2 : 0.33)} height={h * 0.004} rx={h * 0.002} fill="#48484A" />
+      </svg>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   SCREEN CARD
+   ═══════════════════════════════════════════ */
+function ScreenCard({ screen, template, device, brandName, brandColor, bgColor, logoUrl, screenshotUrl, isFirst, onClickUpload, onExport, mockupScale = 1, logoSize = 42 }) {
+  const tpl = template;
+  const bgStyle = bgColor ? { background: bgColor } : tpl.bg(brandColor);
+  const textColor = tpl.textColor;
+  const isLight = bgColor ? isLightColor(bgColor) : textColor === '#1A1A1A';
+  const isIpad = device === 'ipad';
+  const cardW = isIpad ? 470 : 375;
+  const cardH = isIpad ? 680 : 630;
+  // Top block height grows with logo size so phone stays aligned
+  const topBlockH = isFirst ? Math.max(60, logoSize + 28) : 60;
+
+  return (
+    <div className="screen-card-wrap" style={{ position:'relative', flexShrink: 0 }}>
+      <div style={{
+        width: cardW, height: cardH, borderRadius: 14, overflow: 'hidden',
+        ...bgStyle, position: 'relative',
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        padding: '28px 12px 0', gap: 6,
+        boxShadow: '0 4px 32px rgba(0,0,0,0.3)',
+      }}>
+        {/* Decorations */}
+        {tpl.decos(brandColor).map((d, i) => {
+          if (d.type === 'circle') return <div key={i} style={{ position:'absolute', left:d.cx, top:d.cy, width:d.r, height:d.r, borderRadius:'50%', background:d.fill, opacity:d.opacity, transform:'translate(-50%,-50%)', pointerEvents:'none' }} />;
+          if (d.type === 'dot') return <div key={i} style={{ position:'absolute', left:d.cx, top:d.cy, width:d.r*2, height:d.r*2, borderRadius:'50%', background:d.fill, opacity:d.opacity, pointerEvents:'none' }} />;
+          if (d.type === 'glow') return <div key={i} style={{ position:'absolute', left:d.cx, top:d.cy, width:d.r, height:d.r, borderRadius:'50%', background:`radial-gradient(circle, ${d.fill}${Math.round(d.opacity*255).toString(16).padStart(2,'0')}, transparent)`, transform:'translate(-50%,-50%)', pointerEvents:'none' }} />;
+          if (d.type === 'slab') return <div key={i} style={{ position:'absolute', left:d.x, top:d.y, width:d.w, height:d.h, background:d.fill, opacity:d.opacity, transform:`skewX(${d.skew}deg)`, pointerEvents:'none' }} />;
+          return null;
+        })}
+
+        {/* Export button */}
+        <button onClick={(e) => { e.stopPropagation(); onExport?.(screen.id); }} className="export-btn" style={{
+          position:'absolute', top:8, right:8, zIndex:10,
+          width:26, height:26, borderRadius:6, border:'none', cursor:'pointer',
+          background:'rgba(0,0,0,0.3)', backdropFilter:'blur(6px)',
+          color:'#fff', fontSize:12, display:'flex', alignItems:'center', justifyContent:'center',
+        }} title="Export this screenshot">↓</button>
+
+        {/* Fixed-height top block — keeps phone vertically aligned across all cards */}
+        <div style={{ zIndex:3, flexShrink:0, height:topBlockH, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'flex-end', gap:5, width:'100%' }}>
+          {/* Logo / Brand name — screen 1 only */}
+          {isFirst && (
+            <div style={{ textAlign:'center' }}>
+              {logoUrl ? (
+                <img src={logoUrl} alt="logo" style={{ maxHeight:logoSize, maxWidth:Math.round(logoSize * 4.5), objectFit:'contain' }} />
+              ) : brandName ? (
+                <div style={{ fontSize:14, fontWeight:900, letterSpacing:2, color:textColor, fontFamily:"'Bricolage Grotesque', sans-serif", textShadow: isLight ? 'none' : '0 2px 12px rgba(0,0,0,0.3)' }}>
+                  {brandName.toUpperCase()}
+                </div>
+              ) : null}
+            </div>
+          )}
+          {/* Headline */}
+          <div style={{
+            fontSize: isIpad ? 19 : 17, fontWeight:700, textAlign:'center', lineHeight:1.2,
+            color:textColor, fontFamily:"'Bricolage Grotesque', sans-serif",
+            textShadow: isLight ? 'none' : '0 2px 16px rgba(0,0,0,0.3)',
+            maxWidth:'92%',
+          }}>
+            {screen.headline}
+          </div>
+        </div>
+
+        {/* Device Frame — hero size, bleeds off bottom */}
+        <div style={{ zIndex:3, flex:1, display:'flex', alignItems:'flex-start', marginTop:8, marginBottom: Math.round((isIpad ? -56 : -50) * mockupScale), filter: isLight ? 'none' : 'drop-shadow(0 8px 28px rgba(0,0,0,0.35))' }}>
+          <DeviceFrame device={device} scale={(isIpad ? 1.08 : 1.02) * mockupScale}>
+            {screenshotUrl ? (
+              <img src={screenshotUrl} alt={screen.label} style={{ width:'100%', height:'100%', objectFit:'cover', objectPosition:'top' }} />
+            ) : (
+              <div onClick={() => onClickUpload?.(screen.id)} style={{
+                width:'100%', height:'100%', display:'flex', flexDirection:'column',
+                alignItems:'center', justifyContent:'center', gap:6, cursor:'pointer',
+                background:'#f5f3ef', color:'#bbb', fontSize:11, fontWeight:500,
+              }}>
+                <span style={{ fontSize:24, opacity:0.4 }}>+</span>
+                <span>Upload</span>
+              </div>
+            )}
+          </DeviceFrame>
+        </div>
+
+        {/* Bottom depth fade over bleed area */}
+        <div style={{ position:'absolute', bottom:0, left:0, right:0, height:60, background:'linear-gradient(transparent, rgba(0,0,0,0.08))', pointerEvents:'none', zIndex:4 }} />
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   NOTIFICATION
+   ═══════════════════════════════════════════ */
+function Notification({ notif }) {
+  if (!notif) return null;
+  return (
+    <div style={{
+      position:'fixed', top:16, left:'50%', transform:'translateX(-50%)', zIndex:100,
+      padding:'10px 24px', borderRadius:10,
+      background: notif.type === 'error' ? '#3a1a1a' : '#1a3a1a',
+      border: `1px solid ${notif.type === 'error' ? '#5a2d2d' : '#2d5a2d'}`,
+      color: notif.type === 'error' ? '#f87171' : '#86efac',
+      fontSize:13, fontWeight:500, boxShadow:'0 8px 32px rgba(0,0,0,0.5)',
+      whiteSpace:'nowrap',
+    }}>{notif.msg}</div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   MAIN APP
+   ═══════════════════════════════════════════ */
+function MockupStudio() {
+  const [step, setStep] = useState('setup');
+  const [url, setUrl] = useState('');
+  const [files, setFiles] = useState([]);
+  const [filePreviews, setFilePreviews] = useState([]);
+  const [brandName, setBrandName] = useState('');
+  const [brandColor, setBrandColor] = useState('#D4742C');
+  const [logoFile, setLogoFile] = useState(null);
+  const [logoUrl, setLogoUrl] = useState(null);
+  const [activeTemplate, setActiveTemplate] = useState('minimal');
+  const [activeDevice, setActiveDevice] = useState('iphone');
+  const [screenshots, setScreenshots] = useState({});
+  const [headlines, setHeadlines] = useState(Object.fromEntries(SCREENS.map(s => [s.id, s.defaultHeadline])));
+  const [notification, setNotif] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [apiCost, setApiCost] = useState(null);
+  const [bgColor, setBgColor] = useState('');
+  const [mockupScale, setMockupScale] = useState(1);
+  const [logoSize, setLogoSize] = useState(42);
+
+  const fileInputRef = useRef(null);
+  const logoInputRef = useRef(null);
+  const previewLogoRef = useRef(null);
+
+  // Poll cost endpoint once on mount (pipeline already ran before editor opened)
+  useEffect(() => {
+    fetch('/api/cost').then(r => r.json()).then(d => setApiCost(d.summary)).catch(() => {});
+  }, []);
+
+  const notify = useCallback((msg, type = 'success') => {
+    setNotif({ msg, type });
+    setTimeout(() => setNotif(null), 4000);
+  }, []);
+
+  // Handle file selection
+  const handleFiles = useCallback((fileList) => {
+    const arr = Array.from(fileList).filter(f => f.type.startsWith('image/')).slice(0, 4);
+    setFiles(arr);
+    const previews = arr.map(f => URL.createObjectURL(f));
+    setFilePreviews(previews);
+    const newSS = {};
+    arr.forEach((f, i) => { if (SCREENS[i]) newSS[SCREENS[i].id] = previews[i]; });
+    setScreenshots(newSS);
+  }, []);
+
+  // ── Generate (real API) ──────────────────────────────────────────────────
+  const handleGenerate = useCallback(async () => {
+    if (files.length === 0) { notify('Upload at least one screenshot', 'error'); return; }
+    setLoading(true);
+    try {
+      // Convert screenshots to base64
+      const shots64 = {};
+      for (let i = 0; i < files.length; i++) {
+        const screen = SCREENS[i];
+        if (screen) shots64[screen.id] = await fileToBase64(files[i]);
+      }
+
+      // Convert logo to base64 if uploaded
+      let logoBase64 = null;
+      if (logoFile) logoBase64 = await fileToBase64(logoFile);
+
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url || null, screenshots: shots64, brandName: brandName || null, brandColor, logoBase64 }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'Generation failed');
+
+      // Apply server-extracted brand info (user inputs take priority, already sent)
+      if (data.brandName && !brandName) setBrandName(data.brandName);
+      if (data.brandColor && data.brandColor !== brandColor) setBrandColor(data.brandColor);
+      if (data.logoUrl && !logoUrl) setLogoUrl(data.logoUrl + '?t=' + Date.now());
+
+      setStep('preview');
+      notify(`${files.length} screenshot${files.length > 1 ? 's' : ''} loaded!`);
+    } catch (err) {
+      notify('Generation failed: ' + err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [files, url, brandName, brandColor, logoFile, logoUrl, notify]);
+
+  // ── Export all (real API) ────────────────────────────────────────────────
+  const handleExportAll = useCallback(async () => {
+    setExporting(true);
+    notify('Exporting at full resolution…', 'success');
+    try {
+      const res = await fetch('/api/export/all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template: activeTemplate, device: activeDevice, brandName, brandColor, headlines }),
+      });
+      const data = await res.json();
+      if (data.ok) notify(`Exported ${data.count} images → ${data.outputPath}`);
+      else notify('Export failed: ' + (data.error || 'Unknown'), 'error');
+    } catch (err) {
+      notify('Export failed: ' + err.message, 'error');
+    } finally {
+      setExporting(false);
+    }
+  }, [activeTemplate, activeDevice, brandName, brandColor, headlines, notify]);
+
+  // ── Export single (real API) ─────────────────────────────────────────────
+  const handleExportSingle = useCallback(async (screenId) => {
+    try {
+      const res = await fetch('/api/export/single', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          screenId, template: activeTemplate, device: activeDevice,
+          brandName, brandColor, headline: headlines[screenId],
+        }),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.statusText); }
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl;
+      a.download = `${screenId}-${activeTemplate}-${activeDevice}.png`;
+      a.click();
+      URL.revokeObjectURL(objUrl);
+    } catch (err) {
+      notify('Export failed: ' + err.message, 'error');
+    }
+  }, [activeTemplate, activeDevice, brandName, brandColor, headlines, notify]);
+
+  // ── Replace individual screenshot (real API) ─────────────────────────────
+  const handleScreenUpload = useCallback((screenId) => {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = 'image/*';
+    input.onchange = async () => {
+      if (!input.files?.[0]) return;
+      const file = input.files[0];
+      const preview = URL.createObjectURL(file);
+      setScreenshots(s => ({ ...s, [screenId]: preview }));
+      // Upload to server
+      try {
+        const base64 = await fileToBase64(file);
+        await fetch(`/api/screenshot/${screenId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ base64 }),
+        });
+      } catch {}
+    };
+    input.click();
+  }, []);
+
+  // ── Logo upload in preview (real API) ────────────────────────────────────
+  const handlePreviewLogoUpload = useCallback(async (file) => {
+    if (!file) return;
+    setLogoUrl(URL.createObjectURL(file));
+    try {
+      const base64 = await fileToBase64(file);
+      await fetch('/api/logo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logoBase64: base64 }),
+      });
+    } catch {}
+  }, []);
+
+  const template = TEMPLATES.find(t => t.id === activeTemplate) || TEMPLATES[0];
+  const screensWithHeadlines = SCREENS.map(s => ({ ...s, headline: headlines[s.id] }));
+
+  /* ═══════════════════════════════════════════
+     SETUP VIEW
+     ═══════════════════════════════════════════ */
+  if (step === 'setup') {
+    return (
+      <div style={{
+        minHeight:'100vh', background:'#0A0A0D', color:'#E0DDD6',
+        fontFamily:"'DM Sans', system-ui, sans-serif",
+        display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+        padding:32,
+      }}>
+        <Notification notif={notification} />
+        <div style={{ maxWidth:580, width:'100%', textAlign:'center' }}>
+
+          {/* Title */}
+          <div style={{ marginBottom:40 }}>
+            <div style={{
+              fontSize:36, fontWeight:900, fontFamily:"'Bricolage Grotesque'",
+              letterSpacing:-1, marginBottom:8,
+              background:`linear-gradient(135deg, ${brandColor}, ${lighten(brandColor, 0.3)})`,
+              WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent',
+            }}>
+              Mockup Studio
+            </div>
+            <div style={{ fontSize:15, color:'#666', lineHeight:1.5 }}>
+              Upload your app screenshots, enter your website URL, and generate beautiful app store listings in seconds.
+            </div>
+          </div>
+
+          {/* URL Input */}
+          <div style={{ marginBottom:24, textAlign:'left' }}>
+            <label style={{ fontSize:11, fontWeight:700, color:'#555', letterSpacing:0.5, marginBottom:6, display:'block' }}>
+              Website URL <span style={{ color:'#444', fontWeight:400 }}>(for brand extraction)</span>
+            </label>
+            <input
+              value={url} onChange={e => setUrl(e.target.value)}
+              placeholder="https://yourbrand.com"
+              style={{
+                width:'100%', padding:'14px 16px', borderRadius:10,
+                border:'1px solid #1E1E24', background:'#111114',
+                color:'#E0DDD6', fontSize:15, fontFamily:'inherit', outline:'none',
+                transition:'border-color 0.2s',
+              }}
+              onFocus={e => e.target.style.borderColor = brandColor}
+              onBlur={e => e.target.style.borderColor = '#1E1E24'}
+            />
+          </div>
+
+          {/* Screenshot Upload Zone */}
+          <div
+            onDragOver={e => { e.preventDefault(); e.currentTarget.style.borderColor = brandColor; e.currentTarget.style.background = `${brandColor}08`; }}
+            onDragLeave={e => { e.currentTarget.style.borderColor = '#2E2E36'; e.currentTarget.style.background = '#111114'; }}
+            onDrop={e => { e.preventDefault(); e.currentTarget.style.borderColor = '#2E2E36'; e.currentTarget.style.background = '#111114'; handleFiles(e.dataTransfer.files); }}
+            onClick={() => fileInputRef.current?.click()}
+            style={{
+              padding: filePreviews.length > 0 ? 16 : 40,
+              borderRadius:14, border:'2px dashed #2E2E36',
+              background:'#111114', cursor:'pointer',
+              transition:'all 0.2s', marginBottom:24,
+            }}
+          >
+            {filePreviews.length === 0 ? (
+              <div style={{ textAlign:'center' }}>
+                <div style={{ fontSize:40, marginBottom:8, opacity:0.3 }}>📱</div>
+                <div style={{ fontSize:15, fontWeight:600, color:'#888', marginBottom:4 }}>Drop 4 app screenshots here</div>
+                <div style={{ fontSize:12, color:'#555' }}>PNG or JPG · Home, PDP, PLP, Category</div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap' }}>
+                  {filePreviews.map((p, i) => (
+                    <div key={i} style={{ position:'relative' }}>
+                      <img src={p} alt={`Screen ${i+1}`} style={{ width:80, height:160, objectFit:'cover', objectPosition:'top', borderRadius:8, border:'1px solid #2E2E36' }} />
+                      <div style={{ position:'absolute', bottom:4, left:0, right:0, textAlign:'center', fontSize:8, fontWeight:600, color:'#fff', background:'rgba(0,0,0,0.6)', borderRadius:'0 0 7px 7px', padding:'2px 0' }}>
+                        {SCREENS[i]?.label || `Screen ${i+1}`}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ textAlign:'center', marginTop:10, fontSize:11, color:'#555' }}>
+                  {filePreviews.length}/4 screenshots · Click to change
+                </div>
+              </div>
+            )}
+            <input ref={fileInputRef} type="file" accept="image/*" multiple style={{ display:'none' }}
+              onChange={e => { if (e.target.files) handleFiles(e.target.files); }} />
+          </div>
+
+          {/* Brand Quick Config */}
+          <div style={{ display:'flex', gap:12, marginBottom:28 }}>
+            <div style={{ flex:1, textAlign:'left' }}>
+              <label style={{ fontSize:10, fontWeight:600, color:'#555', marginBottom:4, display:'block' }}>Brand Name</label>
+              <input value={brandName} onChange={e => setBrandName(e.target.value)} placeholder="Auto-detected from URL"
+                style={{ width:'100%', padding:'10px 12px', borderRadius:8, border:'1px solid #1E1E24', background:'#111114', color:'#E0DDD6', fontSize:13, fontFamily:'inherit', outline:'none' }} />
+            </div>
+            <div style={{ width:100, textAlign:'left' }}>
+              <label style={{ fontSize:10, fontWeight:600, color:'#555', marginBottom:4, display:'block' }}>Logo</label>
+              <div onClick={() => logoInputRef.current?.click()}
+                style={{ height:38, borderRadius:8, border:'1px dashed #2E2E36', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', fontSize:10, color:'#555', overflow:'hidden' }}>
+                {logoUrl ? <img src={logoUrl} style={{ maxHeight:28, maxWidth:90 }} alt="" /> : '+ Logo'}
+              </div>
+              <input ref={logoInputRef} type="file" accept="image/*" style={{ display:'none' }}
+                onChange={e => { if (e.target.files?.[0]) { setLogoFile(e.target.files[0]); setLogoUrl(URL.createObjectURL(e.target.files[0])); } }} />
+            </div>
+          </div>
+
+          {/* Generate Button */}
+          <button
+            onClick={handleGenerate}
+            disabled={loading}
+            style={{
+              width:'100%', padding:'16px 0', borderRadius:12, border:'none',
+              background: loading ? '#333' : `linear-gradient(135deg, ${brandColor}, ${darken(brandColor, 0.2)})`,
+              color:'#fff', fontSize:16, fontWeight:800, cursor: loading ? 'not-allowed' : 'pointer',
+              fontFamily:"'Bricolage Grotesque', sans-serif", letterSpacing:0.5,
+              transition:'transform 0.15s, box-shadow 0.15s',
+              boxShadow: loading ? 'none' : `0 4px 24px ${brandColor}40`,
+              display:'flex', alignItems:'center', justifyContent:'center', gap:8,
+            }}
+            onMouseEnter={e => { if (!loading) { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = `0 8px 32px ${brandColor}50`; } }}
+            onMouseLeave={e => { e.currentTarget.style.transform = ''; e.currentTarget.style.boxShadow = loading ? 'none' : `0 4px 24px ${brandColor}40`; }}
+          >
+            {loading && (
+              <div style={{ width:14, height:14, border:'2px solid rgba(255,255,255,0.3)', borderTopColor:'#fff', borderRadius:'50%', animation:'spin 0.6s linear infinite' }} />
+            )}
+            {loading ? 'Uploading & extracting brand…' : 'Generate Screenshots →'}
+          </button>
+        </div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
+
+  /* ═══════════════════════════════════════════
+     PREVIEW VIEW
+     ═══════════════════════════════════════════ */
+  return (
+    <div style={{ height:'100vh', background:'#0A0A0D', color:'#E0DDD6', fontFamily:"'DM Sans', system-ui, sans-serif", display:'flex', flexDirection:'column', overflow:'hidden' }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <Notification notif={notification} />
+
+      {/* Header */}
+      <header style={{
+        padding:'12px 24px', display:'flex', alignItems:'center', justifyContent:'space-between',
+        borderBottom:'1px solid #1A1A1F', background:'rgba(10,10,13,0.9)', backdropFilter:'blur(12px)',
+        position:'sticky', top:0, zIndex:50, flexShrink:0,
+      }}>
+        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+          <button onClick={() => setStep('setup')} style={{ background:'none', border:'none', color:'#666', cursor:'pointer', fontSize:16, padding:'4px 8px', borderRadius:6 }}>←</button>
+          <span style={{ fontSize:14, fontWeight:700, fontFamily:"'Bricolage Grotesque'" }}>Mockup Studio</span>
+          {brandName && <span style={{ fontSize:12, color:'#555', fontWeight:400 }}>· {brandName}</span>}
+        </div>
+        <button
+          onClick={handleExportAll}
+          disabled={exporting}
+          style={{
+            padding:'8px 20px', borderRadius:8, border:'none',
+            background: exporting ? '#333' : brandColor, color:'#fff', fontSize:12, fontWeight:700,
+            cursor: exporting ? 'not-allowed' : 'pointer', fontFamily:'inherit',
+            display:'flex', alignItems:'center', gap:6,
+          }}
+        >
+          {exporting && <div style={{ width:11, height:11, border:'1.5px solid rgba(255,255,255,0.3)', borderTopColor:'#fff', borderRadius:'50%', animation:'spin 0.6s linear infinite' }} />}
+          {exporting ? 'Exporting…' : '↓ Export All'}
+        </button>
+      </header>
+
+      <div style={{ display:'flex', flex:1, overflow:'hidden', height:'calc(100vh - 49px)' }}>
+        {/* Sidebar */}
+        <aside style={{ width:250, minWidth:250, flexShrink:0, height:'100%', borderRight:'1px solid #1A1A1F', overflowY:'auto', overflowX:'hidden' }}>
+        <div style={{ padding:16, display:'flex', flexDirection:'column', gap:18 }}>
+
+          {/* Templates */}
+          <div>
+            <div style={{ fontSize:10, fontWeight:700, color:'#555', letterSpacing:1, textTransform:'uppercase', marginBottom:8 }}>Template</div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6 }}>
+              {TEMPLATES.map(t => (
+                <button key={t.id} onClick={() => setActiveTemplate(t.id)} style={{
+                  height:60, borderRadius:8,
+                  border: activeTemplate === t.id ? `2px solid ${brandColor}` : '2px solid #1E1E24',
+                  ...t.bg(brandColor), cursor:'pointer', position:'relative', overflow:'hidden',
+                  transition:'all 0.15s', transform: activeTemplate === t.id ? 'scale(1.03)' : 'scale(1)',
+                  padding:0,
+                }}>
+                  <div style={{ position:'absolute', bottom:0, left:0, right:0, padding:'10px 6px 4px', background:'linear-gradient(transparent, rgba(0,0,0,0.5))', fontSize:8, fontWeight:600, color:'#fff' }}>{t.name}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Mockup Size */}
+          <div>
+            <div style={{ fontSize:10, fontWeight:700, color:'#555', letterSpacing:1, textTransform:'uppercase', marginBottom:6 }}>
+              Mockup Size <span style={{ color:'#666', fontWeight:400, fontFamily:'monospace', textTransform:'none', letterSpacing:0 }}>{Math.round(mockupScale * 100)}%</span>
+            </div>
+            <input type="range" min="0.6" max="1.5" step="0.05" value={mockupScale}
+              onChange={e => setMockupScale(parseFloat(e.target.value))}
+              style={{ width:'100%', accentColor: brandColor, cursor:'pointer' }} />
+            <div style={{ display:'flex', justifyContent:'space-between', fontSize:9, color:'#444', marginTop:3 }}>
+              <span>60%</span><span>100%</span><span>150%</span>
+            </div>
+          </div>
+
+          {/* Device */}
+          <div>
+            <div style={{ fontSize:10, fontWeight:700, color:'#555', letterSpacing:1, textTransform:'uppercase', marginBottom:6 }}>Device</div>
+            <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+              {DEVICES.map(d => (
+                <button key={d.id} onClick={() => setActiveDevice(d.id)} style={{
+                  padding:'8px 10px', borderRadius:7,
+                  border: activeDevice === d.id ? `1px solid ${brandColor}40` : '1px solid transparent',
+                  background: activeDevice === d.id ? `${brandColor}10` : '#111114',
+                  color: activeDevice === d.id ? '#E0DDD6' : '#555',
+                  fontSize:11, fontWeight:500, cursor:'pointer', fontFamily:'inherit',
+                  display:'flex', justifyContent:'space-between', textAlign:'left',
+                }}>
+                  <span>{d.label}</span>
+                  <span style={{ fontFamily:'monospace', fontSize:9, opacity:0.5 }}>{d.w}×{d.h}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Brand */}
+          <div>
+            <div style={{ fontSize:10, fontWeight:700, color:'#555', letterSpacing:1, textTransform:'uppercase', marginBottom:6 }}>Brand</div>
+            <input value={brandName} onChange={e => setBrandName(e.target.value)} placeholder="Brand name"
+              style={{ width:'100%', padding:'8px 10px', borderRadius:7, border:'1px solid #1E1E24', background:'#111114', color:'#E0DDD6', fontSize:13, fontWeight:600, fontFamily:'inherit', outline:'none', marginBottom:6 }} />
+            <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:6 }}>
+              <input type="color" value={brandColor} onChange={e => setBrandColor(e.target.value)}
+                style={{ width:30, height:30, borderRadius:6, border:'1px solid #1E1E24', cursor:'pointer', padding:1 }} />
+              <input value={brandColor} onChange={e => setBrandColor(e.target.value)}
+                style={{ flex:1, padding:'7px 8px', borderRadius:7, border:'1px solid #1E1E24', background:'#111114', color:'#555', fontSize:10, fontFamily:'monospace', outline:'none' }} />
+            </div>
+            <div style={{ fontSize:9, color:'#444', marginBottom:3 }}>Background color</div>
+            <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:6 }}>
+              <input type="color" value={bgColor || '#F5F0E8'} onChange={e => setBgColor(e.target.value)}
+                style={{ width:30, height:30, borderRadius:6, border:'1px solid #1E1E24', cursor:'pointer', padding:1 }} />
+              <input value={bgColor} onChange={e => setBgColor(e.target.value)} placeholder="auto (from brand color)"
+                style={{ flex:1, padding:'7px 8px', borderRadius:7, border:'1px solid #1E1E24', background:'#111114', color:'#555', fontSize:10, fontFamily:'monospace', outline:'none' }} />
+              {bgColor && <button onClick={() => setBgColor('')} style={{ fontSize:9, color:'#666', background:'none', border:'1px solid #2E2E36', borderRadius:5, cursor:'pointer', padding:'3px 6px', whiteSpace:'nowrap' }}>reset</button>}
+            </div>
+            <div onClick={() => previewLogoRef.current?.click()}
+              style={{ padding:8, borderRadius:7, border:'1px dashed #2E2E36', textAlign:'center', cursor:'pointer', fontSize:10, color:'#555' }}>
+              {logoUrl ? <img src={logoUrl} style={{ maxHeight:24, margin:'0 auto' }} alt="" /> : '+ Upload logo'}
+            </div>
+            <input ref={previewLogoRef} type="file" accept="image/*" style={{ display:'none' }}
+              onChange={e => { if (e.target.files?.[0]) handlePreviewLogoUpload(e.target.files[0]); }} />
+            <div style={{ marginTop:8 }}>
+              <div style={{ fontSize:9, color:'#444', marginBottom:3 }}>
+                Logo size <span style={{ fontFamily:'monospace' }}>{logoSize}px</span>
+              </div>
+              <input type="range" min="24" max="80" step="2" value={logoSize}
+                onChange={e => setLogoSize(parseInt(e.target.value))}
+                style={{ width:'100%', accentColor: brandColor, cursor:'pointer' }} />
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:9, color:'#444', marginTop:2 }}>
+                <span>S</span><span>M</span><span>L</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Headlines */}
+          <div>
+            <div style={{ fontSize:10, fontWeight:700, color:'#555', letterSpacing:1, textTransform:'uppercase', marginBottom:6 }}>Headlines</div>
+            {SCREENS.map(s => (
+              <div key={s.id} style={{ marginBottom:8 }}>
+                <div style={{ fontSize:9, color:'#444', marginBottom:2 }}>{s.label}</div>
+                <input value={headlines[s.id]} onChange={e => setHeadlines(h => ({ ...h, [s.id]: e.target.value }))}
+                  style={{ width:'100%', padding:'7px 9px', borderRadius:6, border:'1px solid #1E1E24', background:'#111114', color:'#E0DDD6', fontSize:11, fontFamily:'inherit', outline:'none' }} />
+              </div>
+            ))}
+          </div>
+
+          {/* Replace screenshots */}
+          <div>
+            <div style={{ fontSize:10, fontWeight:700, color:'#555', letterSpacing:1, textTransform:'uppercase', marginBottom:6 }}>Screenshots</div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:4 }}>
+              {SCREENS.map(s => (
+                <div key={s.id} onClick={() => handleScreenUpload(s.id)}
+                  style={{ height:50, borderRadius:6, border:'1px solid #1E1E24', overflow:'hidden', cursor:'pointer', position:'relative' }}>
+                  {screenshots[s.id] ? (
+                    <img src={screenshots[s.id]} style={{ width:'100%', height:'100%', objectFit:'cover', objectPosition:'top' }} alt="" />
+                  ) : (
+                    <div style={{ width:'100%', height:'100%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:8, color:'#444' }}>Empty</div>
+                  )}
+                  <div style={{ position:'absolute', bottom:0, left:0, right:0, padding:'6px 4px 2px', background:'linear-gradient(transparent, rgba(0,0,0,0.7))', fontSize:7, color:'#aaa', fontWeight:500 }}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+        </div></aside>
+
+        {/* Preview Grid */}
+        <main style={{ flex:1, overflowX:'auto', overflowY:'auto', padding:'20px 24px' }}>
+          <div style={{ display:'flex', gap:16, minWidth:'min-content', paddingBottom:16 }}>
+            {screensWithHeadlines.map((screen, i) => (
+              <ScreenCard
+                key={`${screen.id}-${activeTemplate}-${activeDevice}-${mockupScale}-${logoSize}`}
+                screen={screen}
+                template={template}
+                device={activeDevice}
+                brandName={brandName}
+                brandColor={brandColor}
+                bgColor={bgColor}
+                logoUrl={logoUrl}
+                screenshotUrl={screenshots[screen.id]}
+                isFirst={i === 0}
+                onClickUpload={handleScreenUpload}
+                onExport={handleExportSingle}
+                mockupScale={mockupScale}
+                logoSize={logoSize}
+              />
+            ))}
+          </div>
+
+          {/* Info bar */}
+          <div style={{
+            marginTop:12, padding:'12px 16px', borderRadius:10,
+            background:'#111114', border:'1px solid #1A1A1F',
+            display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8,
+            fontSize:11, color:'#555',
+          }}>
+            <div>
+              {Object.keys(screenshots).length}/4 uploaded · {template.name} · {DEVICES.find(d => d.id === activeDevice)?.label}
+              {' · '}Exports at full resolution ({DEVICES.find(d => d.id === activeDevice)?.w}×{DEVICES.find(d => d.id === activeDevice)?.h}px)
+            </div>
+            {apiCost && apiCost.callCount > 0 && (
+              <div style={{ color:'#555', fontSize:10, fontFamily:'monospace' }}>
+                💰 ${apiCost.totalCost.toFixed(4)} · {apiCost.callCount} API call{apiCost.callCount !== 1 ? 's' : ''} · {apiCost.totalInput.toLocaleString()} tokens
+              </div>
+            )}
+            <div style={{ display:'flex', gap:4 }}>
+              {SCREENS.map(s => (
+                <div key={s.id} style={{ width:7, height:7, borderRadius:'50%', background: screenshots[s.id] ? brandColor : '#222', transition:'background 0.3s' }} />
+              ))}
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<MockupStudio />);
+</script>
+</body>
+</html>
