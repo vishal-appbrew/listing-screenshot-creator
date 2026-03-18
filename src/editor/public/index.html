@@ -24,6 +24,7 @@ img { display: block; }
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
 <script type="text/babel">
 const { useState, useCallback, useRef, useEffect } = React;
@@ -189,7 +190,7 @@ function ScreenCard({ screen, template, device, brandName, brandColor, bgColor, 
   const topBlockH = isFirst ? Math.max(60, logoSize + 28) : 60;
 
   return (
-    <div className="screen-card-wrap" style={{ position:'relative', flexShrink: 0 }}>
+    <div className="screen-card-wrap" data-screen-id={screen.id} style={{ position:'relative', flexShrink: 0 }}>
       <div style={{
         width: cardW, height: cardH, borderRadius: 14, overflow: 'hidden',
         ...bgStyle, position: 'relative',
@@ -375,47 +376,50 @@ function MockupStudio() {
     }
   }, [files, url, brandName, brandColor, logoFile, logoUrl, notify]);
 
+  // ── Client-side canvas capture ───────────────────────────────────────────
+  const captureCard = useCallback(async (screenId) => {
+    const wrap = document.querySelector(`[data-screen-id="${screenId}"]`);
+    if (!wrap) throw new Error('Card not found');
+    const card = wrap.children[0];
+    const canvas = await window.html2canvas(card, {
+      useCORS: true, allowTaint: true, scale: 2, backgroundColor: null,
+      logging: false,
+    });
+    return canvas;
+  }, []);
+
   // ── Export all ───────────────────────────────────────────────────────────
   const handleExportAll = useCallback(async () => {
     setExporting(true);
+    notify('Capturing screenshots…', 'success');
     try {
-      const res = await fetch('/api/export/all', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template: activeTemplate, device: activeDevice, brandName, brandColor, headlines }),
-      });
-      if (!res.ok) { notify('Export requires the local server — run npx tsx src/index.ts locally', 'error'); return; }
-      const data = await res.json().catch(() => ({}));
-      if (data.ok) notify(`Exported ${data.count} images → ${data.outputPath}`);
-      else notify('Export failed: ' + (data.error || 'Unknown'), 'error');
-    } catch (_) {
-      notify('Export requires the local server — run npx tsx src/index.ts locally', 'error');
+      for (let i = 0; i < screensWithHeadlines.length; i++) {
+        const screen = screensWithHeadlines[i];
+        const canvas = await captureCard(screen.id);
+        const a = document.createElement('a');
+        a.download = `${screen.id}-${activeTemplate}-${activeDevice}.png`;
+        a.href = canvas.toDataURL('image/png');
+        a.click();
+        await new Promise(r => setTimeout(r, 300));
+      }
+      notify(`Exported ${screensWithHeadlines.length} images`);
+    } catch (err) {
+      notify('Export failed: ' + err.message, 'error');
     } finally {
       setExporting(false);
     }
-  }, [activeTemplate, activeDevice, brandName, brandColor, headlines, notify]);
+  }, [activeTemplate, activeDevice, screensWithHeadlines, captureCard, notify]);
 
   // ── Export single ────────────────────────────────────────────────────────
   const handleExportSingle = useCallback(async (screenId) => {
     try {
-      const res = await fetch('/api/export/single', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          screenId, template: activeTemplate, device: activeDevice,
-          brandName, brandColor, headline: headlines[screenId],
-        }),
-      });
-      if (!res.ok) { notify('Export requires the local server', 'error'); return; }
-      const blob = await res.blob();
-      const objUrl = URL.createObjectURL(blob);
+      const canvas = await captureCard(screenId);
       const a = document.createElement('a');
-      a.href = objUrl;
       a.download = `${screenId}-${activeTemplate}-${activeDevice}.png`;
+      a.href = canvas.toDataURL('image/png');
       a.click();
-      URL.revokeObjectURL(objUrl);
-    } catch (_) {
-      notify('Export requires the local server', 'error');
+    } catch (err) {
+      notify('Export failed: ' + err.message, 'error');
     }
   }, [activeTemplate, activeDevice, brandName, brandColor, headlines, notify]);
 
