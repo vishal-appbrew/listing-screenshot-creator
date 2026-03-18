@@ -1,0 +1,4 @@
+{
+  "outputDirectory": "src/editor/public",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}
