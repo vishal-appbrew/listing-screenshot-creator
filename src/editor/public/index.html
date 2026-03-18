@@ -331,7 +331,7 @@ function MockupStudio() {
     setScreenshots(newSS);
   }, []);
 
-  // ── Generate (real API) ──────────────────────────────────────────────────
+  // ── Generate ─────────────────────────────────────────────────────────────
   const handleGenerate = useCallback(async () => {
     if (files.length === 0) { notify('Upload at least one screenshot', 'error'); return; }
     setLoading(true);
@@ -347,49 +347,55 @@ function MockupStudio() {
       let logoBase64 = null;
       if (logoFile) logoBase64 = await fileToBase64(logoFile);
 
-      const res = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url || null, screenshots: shots64, brandName: brandName || null, brandColor, logoBase64 }),
-      });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || 'Generation failed');
-
-      // Apply server-extracted brand info (user inputs take priority, already sent)
-      if (data.brandName && !brandName) setBrandName(data.brandName);
-      if (data.brandColor && data.brandColor !== brandColor) setBrandColor(data.brandColor);
-      if (data.logoUrl && !logoUrl) setLogoUrl(data.logoUrl + '?t=' + Date.now());
+      // Try backend API — if unavailable (static deployment), proceed with local data
+      try {
+        const res = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: url || null, screenshots: shots64, brandName: brandName || null, brandColor, logoBase64 }),
+        });
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          if (data.ok) {
+            if (data.brandName && !brandName) setBrandName(data.brandName);
+            if (data.brandColor && data.brandColor !== brandColor) setBrandColor(data.brandColor);
+            if (data.logoUrl && !logoUrl) setLogoUrl(data.logoUrl + '?t=' + Date.now());
+          }
+        }
+      } catch (_) {
+        // No backend — continue with local screenshots
+      }
 
       setStep('preview');
       notify(`${files.length} screenshot${files.length > 1 ? 's' : ''} loaded!`);
     } catch (err) {
-      notify('Generation failed: ' + err.message, 'error');
+      notify('Failed: ' + err.message, 'error');
     } finally {
       setLoading(false);
     }
   }, [files, url, brandName, brandColor, logoFile, logoUrl, notify]);
 
-  // ── Export all (real API) ────────────────────────────────────────────────
+  // ── Export all ───────────────────────────────────────────────────────────
   const handleExportAll = useCallback(async () => {
     setExporting(true);
-    notify('Exporting at full resolution…', 'success');
     try {
       const res = await fetch('/api/export/all', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ template: activeTemplate, device: activeDevice, brandName, brandColor, headlines }),
       });
-      const data = await res.json();
+      if (!res.ok) { notify('Export requires the local server — run npx tsx src/index.ts locally', 'error'); return; }
+      const data = await res.json().catch(() => ({}));
       if (data.ok) notify(`Exported ${data.count} images → ${data.outputPath}`);
       else notify('Export failed: ' + (data.error || 'Unknown'), 'error');
-    } catch (err) {
-      notify('Export failed: ' + err.message, 'error');
+    } catch (_) {
+      notify('Export requires the local server — run npx tsx src/index.ts locally', 'error');
     } finally {
       setExporting(false);
     }
   }, [activeTemplate, activeDevice, brandName, brandColor, headlines, notify]);
 
-  // ── Export single (real API) ─────────────────────────────────────────────
+  // ── Export single ────────────────────────────────────────────────────────
   const handleExportSingle = useCallback(async (screenId) => {
     try {
       const res = await fetch('/api/export/single', {
@@ -400,7 +406,7 @@ function MockupStudio() {
           brandName, brandColor, headline: headlines[screenId],
         }),
       });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.statusText); }
+      if (!res.ok) { notify('Export requires the local server', 'error'); return; }
       const blob = await res.blob();
       const objUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -408,8 +414,8 @@ function MockupStudio() {
       a.download = `${screenId}-${activeTemplate}-${activeDevice}.png`;
       a.click();
       URL.revokeObjectURL(objUrl);
-    } catch (err) {
-      notify('Export failed: ' + err.message, 'error');
+    } catch (_) {
+      notify('Export requires the local server', 'error');
     }
   }, [activeTemplate, activeDevice, brandName, brandColor, headlines, notify]);
 
