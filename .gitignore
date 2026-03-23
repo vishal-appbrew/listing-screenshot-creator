@@ -5,3 +5,4 @@ output/
 *.png
 *.jpg
 *.jpeg
+!src/editor/public/*.png

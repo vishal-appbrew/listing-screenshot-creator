@@ -3,10 +3,12 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import open from 'open';
+import archiver from 'archiver';
 import { getBrowser, createPage, closeBrowser } from '../scraper/browser';
 import { costTracker } from '../utils/costTracker';
 import { extractAssets, classifyColorProfile } from '../scraper/assetExtractor';
 import { renderFallback, ensureFonts } from '../generator/fallbackRenderer';
+import { renderFeatureGraphic } from '../generator/featureGraphicRenderer';
 import { exportAll, ExportConfig } from '../output/exporter';
 import { SCREEN_NAMES, Style, STYLES, DIMENSIONS } from '../config/dimensions';
 import { BrandAssets } from '../scraper/assetExtractor';
@@ -152,6 +154,8 @@ export async function startEditor(initialState?: EditorState): Promise<void> {
     if (_req.method === 'OPTIONS') { res.sendStatus(204); return; }
     next();
   });
+
+  app.use(express.static(path.join(__dirname, 'public')));
 
   app.get('/', (_req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -350,7 +354,111 @@ export async function startEditor(initialState?: EditorState): Promise<void> {
       }
 
       await Promise.all(tasks);
+
+      // Feature graphic
+      const fgPath = path.join(outDir, 'playstore', 'feature-graphic.png');
+      await renderFeatureGraphic({
+        logoPath: studio.logoPath,
+        brandName: studio.brandName,
+        outputPath: fgPath,
+      }).catch(err => console.warn(`Feature graphic failed: ${err}`));
+
       res.json({ ok: true, outputPath: outDir, count });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ── POST /api/export/zip ─────────────────────────────────────────────────
+  // Same as /api/export/all but streams a zip archive back to the browser
+  app.post('/api/export/zip', async (req, res) => {
+    const { template = 'minimal', brandName, brandColor, headlines } = req.body;
+    if (brandName) studio.brandName = brandName;
+    if (brandColor) studio.brandColor = brandColor;
+    if (headlines) studio.headlines = { ...studio.headlines, ...headlines };
+
+    try {
+      await ensureFonts();
+      const style: Style = TEMPLATE_STYLE[template] || 'clean';
+      const colors = makeBrandColors(studio.brandColor);
+      const colorProfile = classifyColorProfile(studio.brandColor);
+      const brandAnalysis = studio.brandAnalysis || { ...DEFAULT_BRAND_ANALYSIS, primaryColorHex: studio.brandColor };
+      const outDir = path.join(studio.outputDir, sanitize(studio.brandName));
+
+      const tasks: Promise<void>[] = [];
+      const generatedPaths: { archivePath: string; filePath: string }[] = [];
+
+      for (const dim of Object.values(DIMENSIONS)) {
+        for (const [screenId, screenName] of Object.entries(SCREEN_MAP)) {
+          const ssPath = studio.screenshotPaths[`${screenName}-${dim.viewport}`];
+          if (!ssPath || !fs.existsSync(ssPath)) continue;
+
+          const idx = Object.keys(SCREEN_MAP).indexOf(screenId);
+          const fileName = `${String(idx + 1).padStart(2, '0')}-${screenName}.png`;
+          const outPath = path.join(outDir, dim.label, style, fileName);
+          fs.mkdirSync(path.dirname(outPath), { recursive: true });
+          generatedPaths.push({ archivePath: `${dim.label}/${style}/${fileName}`, filePath: outPath });
+
+          tasks.push(
+            renderFallback({
+              screenshotPath: ssPath,
+              outputPath: outPath,
+              width: dim.width,
+              height: dim.height,
+              style,
+              tagline: studio.headlines[screenId] || '',
+              brandLogoPath: studio.logoPath,
+              brandName: studio.brandName,
+              colors,
+              colorProfile,
+              brandAnalysis,
+              showLogo: screenId === 's1',
+              deviceType: dim.deviceType,
+            }).catch(err => console.warn(`Export failed ${outPath}: ${err}`))
+          );
+        }
+      }
+
+      await Promise.all(tasks);
+
+      const zipName = `${sanitize(studio.brandName || 'screenshots')}-${template}.zip`;
+      res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
+      res.setHeader('Content-Type', 'application/zip');
+
+      // Feature graphic (1024×500)
+      const fgPath = path.join(outDir, 'playstore', 'feature-graphic.png');
+      await renderFeatureGraphic({
+        logoPath: studio.logoPath,
+        brandName: studio.brandName,
+        outputPath: fgPath,
+      }).catch(err => console.warn(`Feature graphic failed: ${err}`));
+
+      const archive = archiver('zip', { zlib: { level: 6 } });
+      archive.pipe(res);
+      for (const { archivePath, filePath } of generatedPaths) {
+        if (fs.existsSync(filePath)) archive.file(filePath, { name: archivePath });
+      }
+      if (fs.existsSync(fgPath)) archive.file(fgPath, { name: 'playstore/feature-graphic.png' });
+      await archive.finalize();
+    } catch (err) {
+      if (!res.headersSent) res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ── GET /api/feature-graphic ─────────────────────────────────────────────
+  // Returns the rendered feature graphic PNG (for both preview and download)
+  app.get('/api/feature-graphic', async (req, res) => {
+    try {
+      const outPath = path.join(os.tmpdir(), `fg-preview-${Date.now()}.png`);
+      await renderFeatureGraphic({
+        logoPath: studio.logoPath,
+        brandName: studio.brandName,
+        outputPath: outPath,
+      });
+      const download = req.query.download === '1';
+      if (download) res.setHeader('Content-Disposition', 'attachment; filename="feature-graphic.png"');
+      res.setHeader('Content-Type', 'image/png');
+      res.sendFile(outPath, () => fs.unlink(outPath, () => {}));
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }

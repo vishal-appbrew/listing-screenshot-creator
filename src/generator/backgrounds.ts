@@ -222,24 +222,6 @@ export function drawCleanBackground(
   ctx.fillStyle = bgColor;
   ctx.fillRect(0, 0, width, height);
 
-  // Subtle radial highlight at top center
-  const grad = (ctx as any).createRadialGradient(width * 0.5, height * 0.2, 0, width * 0.5, height * 0.2, width * 0.75);
-  grad.addColorStop(0, 'rgba(255,255,255,0.22)');
-  grad.addColorStop(1, 'transparent');
-  ctx.fillStyle = grad as unknown as string;
-  ctx.fillRect(0, 0, width, height);
-
-  // Two subtle accent circles
-  ctx.fillStyle = adjustAlpha(accentHex, 0.065);
-  ctx.beginPath();
-  ctx.arc(width * 0.87, height * 0.10, width * 0.21, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = adjustAlpha(accentHex, 0.04);
-  ctx.beginPath();
-  ctx.arc(width * 0.10, height * 0.83, width * 0.17, 0, Math.PI * 2);
-  ctx.fill();
-
   return textColor;
 }
 

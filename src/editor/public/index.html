@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Mockup Studio</title>
+<title>Listing Screenshot Creator · Appbrew</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800;12..96,900&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
@@ -184,8 +184,11 @@ function ScreenCard({ screen, template, device, brandName, brandColor, bgColor, 
   const textColor = tpl.textColor;
   const isLight = bgColor ? isLightColor(bgColor) : textColor === '#1A1A1A';
   const isIpad = device === 'ipad';
-  const cardW = isIpad ? 470 : 375;
-  const cardH = isIpad ? 680 : 630;
+  // Card height is fixed; width is derived from the device's actual export aspect ratio
+  // so the preview matches the exported image proportions exactly.
+  const cardH = isIpad ? 680 : 640;
+  const deviceDims = DEVICES.find(d => d.id === device) || DEVICES[0];
+  const cardW = Math.round(cardH * (deviceDims.w / deviceDims.h));
   // Top block height grows with logo size so phone stays aligned
   const topBlockH = isFirst ? Math.max(60, logoSize + 28) : 60;
 
@@ -288,6 +291,7 @@ function Notification({ notif }) {
    ═══════════════════════════════════════════ */
 function MockupStudio() {
   const [step, setStep] = useState('setup');
+  const [activeView, setActiveView] = useState('screenshots');
   const [url, setUrl] = useState('');
   const [files, setFiles] = useState([]);
   const [filePreviews, setFilePreviews] = useState([]);
@@ -306,6 +310,8 @@ function MockupStudio() {
   const [bgColor, setBgColor] = useState('');
   const [mockupScale, setMockupScale] = useState(1);
   const [logoSize, setLogoSize] = useState(42);
+  const [fgPreviewUrl, setFgPreviewUrl] = useState(null);
+  const [fgLoading, setFgLoading] = useState(false);
 
   const fileInputRef = useRef(null);
   const logoInputRef = useRef(null);
@@ -391,37 +397,88 @@ function MockupStudio() {
   // ── Export all ───────────────────────────────────────────────────────────
   const handleExportAll = useCallback(async () => {
     setExporting(true);
-    notify('Capturing screenshots…', 'success');
+    notify('Rendering full-resolution images…', 'success');
     try {
-      for (let i = 0; i < screensWithHeadlines.length; i++) {
-        const screen = screensWithHeadlines[i];
-        const canvas = await captureCard(screen.id);
-        const a = document.createElement('a');
-        a.download = `${screen.id}-${activeTemplate}-${activeDevice}.png`;
-        a.href = canvas.toDataURL('image/png');
-        a.click();
-        await new Promise(r => setTimeout(r, 300));
+      const res = await fetch('/api/export/zip', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template: activeTemplate, brandName, brandColor, headlines }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Server error ${res.status}`);
       }
-      notify(`Exported ${screensWithHeadlines.length} images`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${brandName || 'screenshots'}-${activeTemplate}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      notify('Download started!');
     } catch (err) {
       notify('Export failed: ' + err.message, 'error');
     } finally {
       setExporting(false);
     }
-  }, [activeTemplate, activeDevice, screensWithHeadlines, captureCard, notify]);
+  }, [activeTemplate, brandName, brandColor, headlines, notify]);
 
   // ── Export single ────────────────────────────────────────────────────────
   const handleExportSingle = useCallback(async (screenId) => {
     try {
-      const canvas = await captureCard(screenId);
+      const res = await fetch('/api/export/single', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          screenId,
+          template: activeTemplate,
+          device: activeDevice,
+          brandName,
+          brandColor,
+          headline: headlines[screenId],
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Server error ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
+      a.href = url;
       a.download = `${screenId}-${activeTemplate}-${activeDevice}.png`;
-      a.href = canvas.toDataURL('image/png');
       a.click();
+      URL.revokeObjectURL(url);
     } catch (err) {
       notify('Export failed: ' + err.message, 'error');
     }
   }, [activeTemplate, activeDevice, brandName, brandColor, headlines, notify]);
+
+  // ── Feature graphic preview + download ───────────────────────────────────
+  const refreshFgPreview = useCallback(async () => {
+    setFgLoading(true);
+    try {
+      const res = await fetch('/api/feature-graphic');
+      if (res.ok) {
+        const blob = await res.blob();
+        if (fgPreviewUrl) URL.revokeObjectURL(fgPreviewUrl);
+        setFgPreviewUrl(URL.createObjectURL(blob));
+      }
+    } catch {}
+    setFgLoading(false);
+  }, [fgPreviewUrl]);
+
+  const handleExportFeatureGraphic = useCallback(async () => {
+    const a = document.createElement('a');
+    a.href = '/api/feature-graphic?download=1';
+    a.download = 'feature-graphic.png';
+    a.click();
+  }, []);
+
+  // Refresh feature graphic preview whenever the view becomes active
+  useEffect(() => {
+    if (activeView === 'feature-graphic') refreshFgPreview();
+  }, [activeView]);
 
   // ── Replace individual screenshot (real API) ─────────────────────────────
   const handleScreenUpload = useCallback((screenId) => {
@@ -478,15 +535,17 @@ function MockupStudio() {
 
           {/* Title */}
           <div style={{ marginBottom:40 }}>
-            <div style={{
-              fontSize:36, fontWeight:900, fontFamily:"'Bricolage Grotesque'",
-              letterSpacing:-1, marginBottom:8,
-              background:`linear-gradient(135deg, ${brandColor}, ${lighten(brandColor, 0.3)})`,
-              WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent',
-            }}>
-              Mockup Studio
+            {/* Appbrew logo */}
+            <div style={{ display:'flex', justifyContent:'center', marginBottom:20 }}>
+              <img src="/appbrew-logo.png" alt="Appbrew" style={{ height:28 }} />
             </div>
-            <div style={{ fontSize:15, color:'#666', lineHeight:1.5 }}>
+            <div style={{
+              fontSize:30, fontWeight:900, fontFamily:"'Bricolage Grotesque'",
+              letterSpacing:-0.5, marginBottom:8, color:'#E0DDD6',
+            }}>
+              Listing Screenshot Creator
+            </div>
+            <div style={{ fontSize:14, color:'#555', lineHeight:1.6 }}>
               Upload your app screenshots, enter your website URL, and generate beautiful app store listings in seconds.
             </div>
           </div>
@@ -605,28 +664,61 @@ function MockupStudio() {
 
       {/* Header */}
       <header style={{
-        padding:'12px 24px', display:'flex', alignItems:'center', justifyContent:'space-between',
-        borderBottom:'1px solid #1A1A1F', background:'rgba(10,10,13,0.9)', backdropFilter:'blur(12px)',
-        position:'sticky', top:0, zIndex:50, flexShrink:0,
+        padding:'0 20px', display:'flex', alignItems:'center', justifyContent:'space-between',
+        borderBottom:'1px solid #1A1A1F', background:'rgba(10,10,13,0.95)', backdropFilter:'blur(12px)',
+        position:'sticky', top:0, zIndex:50, flexShrink:0, height:52,
       }}>
-        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-          <button onClick={() => setStep('setup')} style={{ background:'none', border:'none', color:'#666', cursor:'pointer', fontSize:16, padding:'4px 8px', borderRadius:6 }}>←</button>
-          <span style={{ fontSize:14, fontWeight:700, fontFamily:"'Bricolage Grotesque'" }}>Mockup Studio</span>
-          {brandName && <span style={{ fontSize:12, color:'#555', fontWeight:400 }}>· {brandName}</span>}
+        {/* Left: back + Appbrew logo + app name */}
+        <div style={{ display:'flex', alignItems:'center', gap:10, minWidth:200 }}>
+          <button onClick={() => setStep('setup')} style={{
+            background:'none', border:'1px solid #1E1E24', color:'#666', cursor:'pointer',
+            fontSize:13, padding:'4px 10px', borderRadius:6, lineHeight:1, flexShrink:0,
+          }}>←</button>
+          <img src="/appbrew-logo.png" alt="Appbrew" style={{ height:18, flexShrink:0 }} />
+          <span style={{ color:'#2A2A30', fontSize:13, flexShrink:0 }}>|</span>
+          <span style={{ fontSize:12, fontWeight:700, fontFamily:"'Bricolage Grotesque'", whiteSpace:'nowrap', color:'#C0BDB8' }}>Listing Screenshot Creator</span>
+          {brandName && <span style={{ fontSize:11, color:'#3A3A3A', fontWeight:400, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth:100 }}>· {brandName}</span>}
         </div>
-        <button
-          onClick={handleExportAll}
-          disabled={exporting}
-          style={{
-            padding:'8px 20px', borderRadius:8, border:'none',
-            background: exporting ? '#333' : brandColor, color:'#fff', fontSize:12, fontWeight:700,
-            cursor: exporting ? 'not-allowed' : 'pointer', fontFamily:'inherit',
-            display:'flex', alignItems:'center', gap:6,
-          }}
-        >
-          {exporting && <div style={{ width:11, height:11, border:'1.5px solid rgba(255,255,255,0.3)', borderTopColor:'#fff', borderRadius:'50%', animation:'spin 0.6s linear infinite' }} />}
-          {exporting ? 'Exporting…' : '↓ Export All'}
-        </button>
+
+        {/* Centre: view tabs */}
+        <div style={{ display:'flex', gap:2, background:'#111114', borderRadius:9, padding:3 }}>
+          {[
+            { id:'screenshots', label:'📱 Screenshots' },
+            { id:'feature-graphic', label:'🎨 Feature Graphic' },
+          ].map(v => (
+            <button key={v.id} onClick={() => setActiveView(v.id)} style={{
+              padding:'5px 16px', borderRadius:7, border:'none', fontSize:11, fontWeight:600,
+              background: activeView === v.id ? '#1E1E28' : 'transparent',
+              color: activeView === v.id ? '#E0DDD6' : '#555',
+              cursor:'pointer', fontFamily:'inherit', transition:'all 0.15s',
+              boxShadow: activeView === v.id ? '0 1px 4px rgba(0,0,0,0.4)' : 'none',
+            }}>{v.label}</button>
+          ))}
+        </div>
+
+        {/* Right: export button */}
+        <div style={{ display:'flex', gap:8, alignItems:'center', minWidth:160, justifyContent:'flex-end' }}>
+          {activeView === 'feature-graphic' && (
+            <button onClick={handleExportFeatureGraphic} style={{
+              padding:'7px 14px', borderRadius:8, border:`1px solid ${brandColor}40`,
+              background:'transparent', color: brandColor, fontSize:11, fontWeight:700,
+              cursor:'pointer', fontFamily:'inherit',
+            }}>↓ Download</button>
+          )}
+          <button
+            onClick={handleExportAll}
+            disabled={exporting}
+            style={{
+              padding:'7px 18px', borderRadius:8, border:'none',
+              background: exporting ? '#333' : brandColor, color:'#fff', fontSize:11, fontWeight:700,
+              cursor: exporting ? 'not-allowed' : 'pointer', fontFamily:'inherit',
+              display:'flex', alignItems:'center', gap:6,
+            }}
+          >
+            {exporting && <div style={{ width:10, height:10, border:'1.5px solid rgba(255,255,255,0.3)', borderTopColor:'#fff', borderRadius:'50%', animation:'spin 0.6s linear infinite' }} />}
+            {exporting ? 'Exporting…' : '↓ Export All'}
+          </button>
+        </div>
       </header>
 
       <div style={{ display:'flex', flex:1, overflow:'hidden', height:'calc(100vh - 49px)' }}>
@@ -755,51 +847,120 @@ function MockupStudio() {
 
         </div></aside>
 
-        {/* Preview Grid */}
+        {/* Main area — switches between Screenshots and Feature Graphic */}
         <main style={{ flex:1, overflowX:'auto', overflowY:'auto', padding:'20px 24px' }}>
-          <div style={{ display:'flex', gap:16, minWidth:'min-content', paddingBottom:16 }}>
-            {screensWithHeadlines.map((screen, i) => (
-              <ScreenCard
-                key={`${screen.id}-${activeTemplate}-${activeDevice}-${mockupScale}-${logoSize}`}
-                screen={screen}
-                template={template}
-                device={activeDevice}
-                brandName={brandName}
-                brandColor={brandColor}
-                bgColor={bgColor}
-                logoUrl={logoUrl}
-                screenshotUrl={screenshots[screen.id]}
-                isFirst={i === 0}
-                onClickUpload={handleScreenUpload}
-                onExport={handleExportSingle}
-                mockupScale={mockupScale}
-                logoSize={logoSize}
-              />
-            ))}
-          </div>
 
-          {/* Info bar */}
-          <div style={{
-            marginTop:12, padding:'12px 16px', borderRadius:10,
-            background:'#111114', border:'1px solid #1A1A1F',
-            display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8,
-            fontSize:11, color:'#555',
-          }}>
-            <div>
-              {Object.keys(screenshots).length}/4 uploaded · {template.name} · {DEVICES.find(d => d.id === activeDevice)?.label}
-              {' · '}Exports at full resolution ({DEVICES.find(d => d.id === activeDevice)?.w}×{DEVICES.find(d => d.id === activeDevice)?.h}px)
-            </div>
-            {apiCost && apiCost.callCount > 0 && (
-              <div style={{ color:'#555', fontSize:10, fontFamily:'monospace' }}>
-                💰 ${apiCost.totalCost.toFixed(4)} · {apiCost.callCount} API call{apiCost.callCount !== 1 ? 's' : ''} · {apiCost.totalInput.toLocaleString()} tokens
-              </div>
-            )}
-            <div style={{ display:'flex', gap:4 }}>
-              {SCREENS.map(s => (
-                <div key={s.id} style={{ width:7, height:7, borderRadius:'50%', background: screenshots[s.id] ? brandColor : '#222', transition:'background 0.3s' }} />
+          {activeView === 'screenshots' && (<>
+            <div style={{ display:'flex', gap:16, minWidth:'min-content', paddingBottom:16 }}>
+              {screensWithHeadlines.map((screen, i) => (
+                <ScreenCard
+                  key={`${screen.id}-${activeTemplate}-${activeDevice}-${mockupScale}-${logoSize}`}
+                  screen={screen}
+                  template={template}
+                  device={activeDevice}
+                  brandName={brandName}
+                  brandColor={brandColor}
+                  bgColor={bgColor}
+                  logoUrl={logoUrl}
+                  screenshotUrl={screenshots[screen.id]}
+                  isFirst={i === 0}
+                  onClickUpload={handleScreenUpload}
+                  onExport={handleExportSingle}
+                  mockupScale={mockupScale}
+                  logoSize={logoSize}
+                />
               ))}
             </div>
-          </div>
+            {/* Info bar */}
+            <div style={{
+              marginTop:4, padding:'10px 16px', borderRadius:10,
+              background:'#111114', border:'1px solid #1A1A1F',
+              display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8,
+              fontSize:11, color:'#555',
+            }}>
+              <div style={{ display:'flex', align:'center', gap:12 }}>
+                <span>{Object.keys(screenshots).length}/4 screenshots</span>
+                <span style={{ color:'#333' }}>·</span>
+                <span>{template.name}</span>
+                <span style={{ color:'#333' }}>·</span>
+                <span>{DEVICES.find(d => d.id === activeDevice)?.label}</span>
+                <span style={{ color:'#333' }}>·</span>
+                <span>{DEVICES.find(d => d.id === activeDevice)?.w}×{DEVICES.find(d => d.id === activeDevice)?.h}px</span>
+              </div>
+              <div style={{ display:'flex', gap:5, alignItems:'center' }}>
+                {SCREENS.map(s => (
+                  <div key={s.id} title={s.label} style={{ width:7, height:7, borderRadius:'50%', background: screenshots[s.id] ? brandColor : '#2A2A2A', transition:'background 0.3s' }} />
+                ))}
+              </div>
+            </div>
+          </>)}
+
+          {activeView === 'feature-graphic' && (
+            <div style={{ maxWidth:900, margin:'0 auto' }}>
+              {/* Title */}
+              <div style={{ marginBottom:20 }}>
+                <div style={{ fontSize:16, fontWeight:700, fontFamily:"'Bricolage Grotesque'", marginBottom:4 }}>Feature Graphic</div>
+                <div style={{ fontSize:12, color:'#555' }}>1024 × 500px · Play Store listing banner · Background extracted from logo</div>
+              </div>
+
+              {/* Preview frame */}
+              <div style={{
+                width:'100%', aspectRatio:'1024/500', borderRadius:14,
+                overflow:'hidden', border:'1px solid #1E1E24',
+                background:'#111114', position:'relative', marginBottom:20,
+              }}>
+                {fgLoading && (
+                  <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', gap:10, color:'#555', fontSize:13 }}>
+                    <div style={{ width:16, height:16, border:'2px solid #333', borderTopColor: brandColor, borderRadius:'50%', animation:'spin 0.7s linear infinite' }} />
+                    Rendering…
+                  </div>
+                )}
+                {fgPreviewUrl && !fgLoading && (
+                  <img src={fgPreviewUrl} style={{ width:'100%', height:'100%', objectFit:'contain', display:'block' }} alt="Feature Graphic Preview" />
+                )}
+                {!fgPreviewUrl && !fgLoading && (
+                  <div style={{ position:'absolute', inset:0, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:8, color:'#444' }}>
+                    <div style={{ fontSize:32, opacity:0.3 }}>🎨</div>
+                    <div style={{ fontSize:13 }}>Click "Refresh Preview" to render</div>
+                  </div>
+                )}
+              </div>
+
+              {/* Actions */}
+              <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+                <button onClick={refreshFgPreview} disabled={fgLoading} style={{
+                  padding:'10px 20px', borderRadius:8, border:'1px solid #1E1E24',
+                  background:'#111114', color: fgLoading ? '#444' : '#E0DDD6',
+                  fontSize:12, fontWeight:600, cursor: fgLoading ? 'not-allowed' : 'pointer', fontFamily:'inherit',
+                  display:'flex', alignItems:'center', gap:6,
+                }}>
+                  {fgLoading && <div style={{ width:10, height:10, border:'1.5px solid #333', borderTopColor:'#E0DDD6', borderRadius:'50%', animation:'spin 0.7s linear infinite' }} />}
+                  ↺ Refresh Preview
+                </button>
+                <button onClick={handleExportFeatureGraphic} style={{
+                  padding:'10px 20px', borderRadius:8, border:'none',
+                  background: brandColor, color:'#fff',
+                  fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit',
+                }}>
+                  ↓ Download PNG
+                </button>
+                <span style={{ fontSize:11, color:'#444', marginLeft:4 }}>
+                  Included in Export All zip too
+                </span>
+              </div>
+
+              {/* Info */}
+              <div style={{
+                marginTop:20, padding:'12px 16px', borderRadius:10,
+                background:'#111114', border:'1px solid #1A1A1F', fontSize:11, color:'#555', lineHeight:1.6,
+              }}>
+                <strong style={{ color:'#666' }}>How the background is chosen:</strong> The renderer samples the 4 corner pixels of your logo.
+                If they're transparent → white background. If they're a solid colour (e.g. brand white or dark) → that colour is used.
+                Upload a logo above to see the result.
+              </div>
+            </div>
+          )}
+
         </main>
       </div>
     </div>
