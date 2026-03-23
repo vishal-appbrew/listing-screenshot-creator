@@ -25,6 +25,7 @@ img { display: block; }
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
 
 <script type="text/babel">
 const { useState, useCallback, useRef, useEffect } = React;
@@ -61,6 +62,70 @@ function fileToBase64(file) {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+/* ── Backend availability check ─────────────────────────────────────────── */
+// Returns true if the server responded with the expected content-type.
+async function isBackendAvailable() {
+  try {
+    const res = await fetch('/api/cost', { method: 'GET' });
+    if (!res.ok) return false;
+    const ct = res.headers.get('content-type') || '';
+    return ct.includes('application/json');
+  } catch { return false; }
+}
+
+/* ── Client-side background detection from logo ─────────────────────────── */
+async function detectBgColorClientSide(logoUrl) {
+  if (!logoUrl) return '#FFFFFF';
+  try {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = logoUrl; });
+    const c = document.createElement('canvas');
+    c.width = 100; c.height = 100;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0, 100, 100);
+    const corners = [[0,0],[99,0],[0,99],[99,99]].map(([x,y]) => ctx.getImageData(x,y,1,1).data);
+    if (corners.every(d => d[3] < 30)) return '#FFFFFF';
+    const opaque = corners.filter(d => d[3] > 200);
+    if (!opaque.length) return '#FFFFFF';
+    const avg = opaque.reduce((a,d) => ({r:a.r+d[0],g:a.g+d[1],b:a.b+d[2]}), {r:0,g:0,b:0});
+    const n = opaque.length;
+    const toHex = v => Math.round(v/n).toString(16).padStart(2,'0');
+    return `#${toHex(avg.r)}${toHex(avg.g)}${toHex(avg.b)}`;
+  } catch { return '#FFFFFF'; }
+}
+
+/* ── Client-side feature graphic renderer (1024×500) ────────────────────── */
+async function renderFeatureGraphicClientSide(logoUrl, brandName) {
+  const W = 1024, H = 500;
+  const bgColor = await detectBgColorClientSide(logoUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, W, H);
+  if (logoUrl) {
+    try {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = logoUrl; });
+      const maxW = W * 0.46, maxH = H * 0.58;
+      const aspect = img.width / img.height;
+      let w = maxW, h = w / aspect;
+      if (h > maxH) { h = maxH; w = h * aspect; }
+      ctx.drawImage(img, Math.round((W-w)/2), Math.round((H-h)/2), Math.round(w), Math.round(h));
+    } catch {}
+  } else {
+    const luma = parseInt(bgColor.slice(1,3),16)*0.299 + parseInt(bgColor.slice(3,5),16)*0.587 + parseInt(bgColor.slice(5,7),16)*0.114;
+    ctx.fillStyle = luma > 128 ? '#1A1A1A' : '#FFFFFF';
+    ctx.font = 'bold 80px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(brandName || 'Brand', W/2, H/2);
+  }
+  return canvas;
 }
 
 /* ═══════════════════════════════════════════
@@ -399,56 +464,77 @@ function MockupStudio() {
     setExporting(true);
     notify('Rendering full-resolution images…', 'success');
     try {
-      const res = await fetch('/api/export/zip', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template: activeTemplate, brandName, brandColor, headlines }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `Server error ${res.status}`);
+      // Try server-side zip first (local / Node deployment)
+      const serverOk = await isBackendAvailable();
+      if (serverOk) {
+        const res = await fetch('/api/export/zip', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ template: activeTemplate, brandName, brandColor, headlines }),
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('zip')) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = `${brandName || 'screenshots'}-${activeTemplate}.zip`; a.click();
+          URL.revokeObjectURL(url);
+          notify('Download started!');
+          return;
+        }
       }
-      const blob = await res.blob();
+      // Client-side fallback: html2canvas all cards + feature graphic → zip
+      notify('Packaging screenshots…', 'success');
+      const zip = new JSZip();
+      for (const screen of screensWithHeadlines) {
+        const wrap = document.querySelector(`[data-screen-id="${screen.id}"]`);
+        if (!wrap) continue;
+        const canvas = await window.html2canvas(wrap.children[0], { useCORS:true, allowTaint:true, scale:2, backgroundColor:null, logging:false });
+        zip.file(`${screen.id}-${activeTemplate}-${activeDevice}.png`, canvas.toDataURL('image/png').split(',')[1], { base64:true });
+      }
+      // Feature graphic client-side
+      const fgCanvas = await renderFeatureGraphicClientSide(logoUrl, brandName);
+      zip.file('feature-graphic.png', fgCanvas.toDataURL('image/png').split(',')[1], { base64:true });
+
+      const blob = await zip.generateAsync({ type:'blob' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = `${brandName || 'screenshots'}-${activeTemplate}.zip`;
-      a.click();
+      a.href = url; a.download = `${brandName || 'screenshots'}-${activeTemplate}.zip`; a.click();
       URL.revokeObjectURL(url);
-      notify('Download started!');
+      notify(`Downloaded ${screensWithHeadlines.length + 1} images`);
     } catch (err) {
       notify('Export failed: ' + err.message, 'error');
     } finally {
       setExporting(false);
     }
-  }, [activeTemplate, brandName, brandColor, headlines, notify]);
+  }, [activeTemplate, activeDevice, brandName, brandColor, logoUrl, headlines, screensWithHeadlines, notify]);
 
   // ── Export single ────────────────────────────────────────────────────────
   const handleExportSingle = useCallback(async (screenId) => {
     try {
-      const res = await fetch('/api/export/single', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          screenId,
-          template: activeTemplate,
-          device: activeDevice,
-          brandName,
-          brandColor,
-          headline: headlines[screenId],
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `Server error ${res.status}`);
+      const serverOk = await isBackendAvailable();
+      if (serverOk) {
+        const res = await fetch('/api/export/single', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ screenId, template: activeTemplate, device: activeDevice, brandName, brandColor, headline: headlines[screenId] }),
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('image/')) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = `${screenId}-${activeTemplate}-${activeDevice}.png`; a.click();
+          URL.revokeObjectURL(url);
+          return;
+        }
       }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
+      // Client-side fallback: html2canvas
+      const wrap = document.querySelector(`[data-screen-id="${screenId}"]`);
+      if (!wrap) throw new Error('Card not found');
+      const canvas = await window.html2canvas(wrap.children[0], { useCORS:true, allowTaint:true, scale:2, backgroundColor:null, logging:false });
       const a = document.createElement('a');
-      a.href = url;
-      a.download = `${screenId}-${activeTemplate}-${activeDevice}.png`;
-      a.click();
-      URL.revokeObjectURL(url);
+      a.href = canvas.toDataURL('image/png'); a.download = `${screenId}-${activeTemplate}-${activeDevice}.png`; a.click();
     } catch (err) {
       notify('Export failed: ' + err.message, 'error');
     }
@@ -458,22 +544,50 @@ function MockupStudio() {
   const refreshFgPreview = useCallback(async () => {
     setFgLoading(true);
     try {
-      const res = await fetch('/api/feature-graphic');
-      if (res.ok) {
-        const blob = await res.blob();
-        if (fgPreviewUrl) URL.revokeObjectURL(fgPreviewUrl);
-        setFgPreviewUrl(URL.createObjectURL(blob));
+      const serverOk = await isBackendAvailable();
+      if (serverOk) {
+        const res = await fetch('/api/feature-graphic');
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('image/')) {
+          const blob = await res.blob();
+          if (fgPreviewUrl) URL.revokeObjectURL(fgPreviewUrl);
+          setFgPreviewUrl(URL.createObjectURL(blob));
+          setFgLoading(false);
+          return;
+        }
       }
+      // Client-side fallback
+      const canvas = await renderFeatureGraphicClientSide(logoUrl, brandName);
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+      if (fgPreviewUrl) URL.revokeObjectURL(fgPreviewUrl);
+      setFgPreviewUrl(URL.createObjectURL(blob));
     } catch {}
     setFgLoading(false);
-  }, [fgPreviewUrl]);
+  }, [fgPreviewUrl, logoUrl, brandName]);
 
   const handleExportFeatureGraphic = useCallback(async () => {
-    const a = document.createElement('a');
-    a.href = '/api/feature-graphic?download=1';
-    a.download = 'feature-graphic.png';
-    a.click();
-  }, []);
+    try {
+      const serverOk = await isBackendAvailable();
+      if (serverOk) {
+        const res = await fetch('/api/feature-graphic?download=1');
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('image/')) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = 'feature-graphic.png'; a.click();
+          URL.revokeObjectURL(url);
+          return;
+        }
+      }
+      // Client-side fallback
+      const canvas = await renderFeatureGraphicClientSide(logoUrl, brandName);
+      const a = document.createElement('a');
+      a.href = canvas.toDataURL('image/png'); a.download = 'feature-graphic.png'; a.click();
+    } catch (err) {
+      notify('Download failed: ' + err.message, 'error');
+    }
+  }, [logoUrl, brandName, notify]);
 
   // Refresh feature graphic preview whenever the view becomes active
   useEffect(() => {
