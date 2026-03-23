@@ -459,12 +459,12 @@ function MockupStudio() {
     return canvas;
   }, []);
 
-  // ── Export all ───────────────────────────────────────────────────────────
+  // ── Export all (all devices + feature graphic) ───────────────────────────
   const handleExportAll = useCallback(async () => {
     setExporting(true);
-    notify('Rendering full-resolution images…', 'success');
+    notify('Preparing export…', 'success');
     try {
-      // Try server-side zip first (local / Node deployment)
+      // Try server-side zip first (local / Node deployment) — already renders all devices
       const serverOk = await isBackendAvailable();
       if (serverOk) {
         const res = await fetch('/api/export/zip', {
@@ -483,31 +483,82 @@ function MockupStudio() {
           return;
         }
       }
-      // Client-side fallback: html2canvas all cards + feature graphic → zip
-      notify('Packaging screenshots…', 'success');
-      const zip = new JSZip();
-      for (const screen of screensWithHeadlines) {
-        const wrap = document.querySelector(`[data-screen-id="${screen.id}"]`);
-        if (!wrap) continue;
-        const canvas = await window.html2canvas(wrap.children[0], { useCORS:true, allowTaint:true, scale:2, backgroundColor:null, logging:false });
-        zip.file(`${screen.id}-${activeTemplate}-${activeDevice}.png`, canvas.toDataURL('image/png').split(',')[1], { base64:true });
-      }
-      // Feature graphic client-side
-      const fgCanvas = await renderFeatureGraphicClientSide(logoUrl, brandName);
-      zip.file('feature-graphic.png', fgCanvas.toDataURL('image/png').split(',')[1], { base64:true });
 
-      const blob = await zip.generateAsync({ type:'blob' });
+      // ── Client-side fallback: render all 3 devices off-screen ────────────
+      const zip = new JSZip();
+      const tpl = TEMPLATES.find(t => t.id === activeTemplate) || TEMPLATES[0];
+      const screensArr = SCREENS.map(s => ({ ...s, headline: headlines[s.id] }));
+      const deviceFolders = { iphone: 'ios', android: 'playstore', ipad: 'ipad' };
+
+      for (const dev of DEVICES) {
+        notify(`Rendering ${dev.label}…`, 'success');
+
+        // Render all 4 cards for this device into a hidden off-screen container
+        const container = document.createElement('div');
+        container.style.cssText = 'position:fixed;left:-99999px;top:0;display:flex;gap:0;';
+        document.body.appendChild(container);
+
+        const root = ReactDOM.createRoot(container);
+        root.render(
+          React.createElement(React.Fragment, null,
+            screensArr.map((screen, i) =>
+              React.createElement(ScreenCard, {
+                key: screen.id,
+                screen, template: tpl, device: dev.id,
+                brandName, brandColor, bgColor, logoUrl,
+                screenshotUrl: screenshots[screen.id],
+                isFirst: i === 0,
+                onClickUpload: () => {}, onExport: () => {},
+                mockupScale: 1, logoSize: 42,
+              })
+            )
+          )
+        );
+
+        // Wait for React to paint + all images inside to fully load
+        await new Promise(r => setTimeout(r, 200));
+        await Promise.all(
+          Array.from(container.querySelectorAll('img')).map(img =>
+            img.complete ? Promise.resolve() :
+            new Promise(r => { img.onload = r; img.onerror = r; })
+          )
+        );
+        await new Promise(r => setTimeout(r, 100));
+
+        // Capture each card
+        const folder = zip.folder(deviceFolders[dev.id] || dev.id);
+        for (const screen of screensArr) {
+          const wrap = container.querySelector(`[data-screen-id="${screen.id}"]`);
+          if (!wrap) continue;
+          const canvas = await window.html2canvas(wrap.children[0], {
+            useCORS: true, allowTaint: true, scale: 2, backgroundColor: null, logging: false,
+          });
+          const screenName = { s1:'home', s2:'pdp', s3:'plp', s4:'category' }[screen.id] || screen.id;
+          folder.file(`${screenName}.png`, canvas.toDataURL('image/png').split(',')[1], { base64: true });
+        }
+
+        root.unmount();
+        document.body.removeChild(container);
+      }
+
+      // Feature graphic
+      notify('Rendering feature graphic…', 'success');
+      const fgCanvas = await renderFeatureGraphicClientSide(logoUrl, brandName);
+      zip.file('playstore/feature-graphic.png', fgCanvas.toDataURL('image/png').split(',')[1], { base64: true });
+
+      notify('Packaging zip…', 'success');
+      const blob = await zip.generateAsync({ type: 'blob' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url; a.download = `${brandName || 'screenshots'}-${activeTemplate}.zip`; a.click();
       URL.revokeObjectURL(url);
-      notify(`Downloaded ${screensWithHeadlines.length + 1} images`);
+      notify(`✓ ${DEVICES.length * 4 + 1} files downloaded`);
     } catch (err) {
       notify('Export failed: ' + err.message, 'error');
     } finally {
       setExporting(false);
     }
-  }, [activeTemplate, activeDevice, brandName, brandColor, logoUrl, headlines, screensWithHeadlines, notify]);
+  }, [activeTemplate, brandName, brandColor, bgColor, logoUrl, headlines, screenshots, notify]);
 
   // ── Export single ────────────────────────────────────────────────────────
   const handleExportSingle = useCallback(async (screenId) => {
@@ -830,7 +881,7 @@ function MockupStudio() {
             }}
           >
             {exporting && <div style={{ width:10, height:10, border:'1.5px solid rgba(255,255,255,0.3)', borderTopColor:'#fff', borderRadius:'50%', animation:'spin 0.6s linear infinite' }} />}
-            {exporting ? 'Exporting…' : '↓ Export All'}
+            {exporting ? 'Exporting…' : '↓ Export All (zip)'}
           </button>
         </div>
       </header>
