@@ -327,7 +327,7 @@ function ScreenCard({ screen, template, device, brandName, brandColor, bgColor, 
         </div>
 
         {/* Bottom depth fade over bleed area */}
-        <div style={{ position:'absolute', bottom:0, left:0, right:0, height:60, background:'linear-gradient(transparent, rgba(0,0,0,0.08))', pointerEvents:'none', zIndex:4 }} />
+        <div style={{ position:'absolute', bottom:0, left:0, right:0, height:60, background:'linear-gradient(rgba(0,0,0,0), rgba(0,0,0,0.08))', pointerEvents:'none', zIndex:4 }} />
       </div>
     </div>
   );
@@ -447,12 +447,15 @@ function MockupStudio() {
     }
   }, [files, url, brandName, brandColor, logoFile, logoUrl, notify]);
 
-  // ── Rescale a canvas to exact target dimensions ───────────────────────────
+  // ── Rescale a canvas to exact target dimensions (no alpha) ───────────────
   const resizeCanvas = (src, targetW, targetH) => {
     const dst = document.createElement('canvas');
     dst.width = targetW;
     dst.height = targetH;
-    dst.getContext('2d').drawImage(src, 0, 0, targetW, targetH);
+    const ctx = dst.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, targetW, targetH);
+    ctx.drawImage(src, 0, 0, targetW, targetH);
     return dst;
   };
 
@@ -462,7 +465,7 @@ function MockupStudio() {
     if (!wrap) throw new Error('Card not found');
     const card = wrap.children[0];
     const canvas = await window.html2canvas(card, {
-      useCORS: true, allowTaint: true, scale: 2, backgroundColor: null,
+      useCORS: true, allowTaint: true, scale: 2, backgroundColor: '#ffffff',
       logging: false,
     });
     return canvas;
@@ -540,7 +543,7 @@ function MockupStudio() {
           const wrap = container.querySelector(`[data-screen-id="${screen.id}"]`);
           if (!wrap) continue;
           const captured = await window.html2canvas(wrap.children[0], {
-            useCORS: true, allowTaint: true, scale: 2, backgroundColor: null, logging: false,
+            useCORS: true, allowTaint: true, scale: 2, backgroundColor: '#ffffff', logging: false,
           });
           const canvas = resizeCanvas(captured, dev.w, dev.h);
           const screenName = { s1:'home', s2:'pdp', s3:'plp', s4:'category' }[screen.id] || screen.id;
@@ -593,7 +596,7 @@ function MockupStudio() {
       // Client-side fallback: html2canvas + resize to target dimensions
       const wrap = document.querySelector(`[data-screen-id="${screenId}"]`);
       if (!wrap) throw new Error('Card not found');
-      const captured = await window.html2canvas(wrap.children[0], { useCORS:true, allowTaint:true, scale:2, backgroundColor:null, logging:false });
+      const captured = await window.html2canvas(wrap.children[0], { useCORS:true, allowTaint:true, scale:2, backgroundColor:'#ffffff', logging:false });
       const devDims = DEVICES.find(d => d.id === activeDevice) || DEVICES[0];
       const canvas = resizeCanvas(captured, devDims.w, devDims.h);
       const a = document.createElement('a');
